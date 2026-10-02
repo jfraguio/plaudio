@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.playwright-mcp/
+*.m4b
+*.m4a
+*.mp4
