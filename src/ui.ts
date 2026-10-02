@@ -22,6 +22,7 @@ function el<T extends HTMLElement>(id: string): T {
 export interface UIHandlers {
   onPick: () => void;
   onContinue: () => void;
+  onFullscreen: () => void;
   onFiles: (files: FileList | null) => void;
   onToggle: () => void;
   onBack: () => void;
@@ -60,6 +61,7 @@ export class UI {
   private readonly menu = el<HTMLElement>("app-menu");
   private readonly menuOpen = el<HTMLButtonElement>("menu-open");
   private readonly menuContinue = el<HTMLButtonElement>("menu-continue");
+  private readonly menuFullscreen = el<HTMLButtonElement>("menu-fullscreen");
   private readonly menuInfo = el<HTMLButtonElement>("menu-info");
   private readonly infoDialog = el<HTMLDialogElement>("info-dialog");
   private readonly infoClose = el<HTMLButtonElement>("info-close");
@@ -79,6 +81,10 @@ export class UI {
     this.menuContinue.addEventListener("click", () => {
       this.closeMenu();
       handlers.onContinue();
+    });
+    this.menuFullscreen.addEventListener("click", () => {
+      this.closeMenu();
+      handlers.onFullscreen();
     });
     this.menuInfo.addEventListener("click", () => {
       this.closeMenu();
@@ -200,6 +206,10 @@ export class UI {
   setMenuState(params: { hasBook: boolean; canContinue: boolean }): void {
     this.menuOpen.hidden = !params.hasBook;
     this.menuContinue.hidden = !params.canContinue;
+  }
+
+  setFullscreenState(active: boolean): void {
+    this.menuFullscreen.classList.toggle("is-active", active);
   }
 
   openFileDialog(): void {

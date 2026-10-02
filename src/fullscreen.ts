@@ -4,6 +4,7 @@ type WebkitElement = HTMLElement & {
 
 type WebkitDocument = Document & {
   webkitFullscreenElement?: Element | null;
+  webkitExitFullscreen?: () => Promise<void> | void;
 };
 
 export function isFullscreen(): boolean {
@@ -32,4 +33,27 @@ export async function requestFullscreen(): Promise<boolean> {
     console.warn("[plaudio] no se pudo entrar en pantalla completa", error);
     return false;
   }
+}
+
+export async function exitFullscreen(): Promise<void> {
+  if (!isFullscreen()) return;
+  const doc = document as WebkitDocument;
+  try {
+    if (doc.exitFullscreen) {
+      await doc.exitFullscreen();
+    } else if (doc.webkitExitFullscreen) {
+      await doc.webkitExitFullscreen();
+    }
+  } catch (error) {
+    console.warn("[plaudio] no se pudo salir de pantalla completa", error);
+  }
+}
+
+/** Alterna pantalla completa. Devuelve el estado resultante. */
+export async function toggleFullscreen(): Promise<boolean> {
+  if (isFullscreen()) {
+    await exitFullscreen();
+    return false;
+  }
+  return requestFullscreen();
 }

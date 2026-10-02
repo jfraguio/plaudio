@@ -141,6 +141,34 @@ body {
   outline: none;
 }
 
+.menu-item-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.menu-check {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.menu-item-toggle.is-active {
+  color: var(--accent);
+}
+
+.menu-item-toggle.is-active .menu-check {
+  opacity: 1;
+}
+
 .app-main {
   flex: 1;
   display: flex;
