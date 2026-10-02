@@ -1,6 +1,7 @@
 import "./styles.css";
 import { currentChapterIndex, nextChapterIndex, previousChapterIndex } from "./chapters";
 import { fileFromHandle, pickFile, supportsFileSystemAccess } from "./file-access";
+import { isFullscreen, requestFullscreen } from "./fullscreen";
 import { MediaSessionController } from "./media-session";
 import { loadBookMetadata } from "./metadata";
 import {
@@ -33,6 +34,12 @@ const state = createInitialState();
 let pendingSaved: AudiobookState | undefined;
 let scrubbing = false;
 let lastPositionSync = 0;
+let suppressAutoFullscreen = false;
+
+function tryEnterFullscreen(): void {
+  if (suppressAutoFullscreen || isFullscreen()) return;
+  void requestFullscreen();
+}
 
 const saver = new ThrottledSaver(persistNow, 5000);
 
@@ -106,6 +113,8 @@ function applyMetadata(meta: BookMetadata): void {
 }
 
 async function openBook(file: File, handle?: FileSystemFileHandle): Promise<void> {
+  suppressAutoFullscreen = false;
+  tryEnterFullscreen();
   releaseCurrent();
 
   state.file = file;
@@ -338,6 +347,7 @@ audio.addEventListener("play", () => {
   ui.renderPlayState(true);
   media.setPlaybackState("playing");
   media.syncPosition();
+  tryEnterFullscreen();
 });
 audio.addEventListener("pause", () => {
   state.playing = false;
@@ -360,6 +370,10 @@ audio.addEventListener("error", () => {
     ui.setError("Playback error.");
   }
   state.canPlay = false;
+});
+
+document.addEventListener("fullscreenchange", () => {
+  if (!isFullscreen()) suppressAutoFullscreen = true;
 });
 
 document.addEventListener("visibilitychange", () => {
