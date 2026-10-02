@@ -1,13 +1,31 @@
 import type { AppState } from "./types";
 import { formatTime } from "./utils";
 
-const genericCoverSvg =
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">' +
-  '<rect width="512" height="512" fill="#151515"/>' +
-  '<g fill="none" stroke="#f2f2f0" stroke-width="14" stroke-linecap="round" stroke-linejoin="round">' +
-  '<path d="M120 156c44-18 96-18 136 10v206c-40-28-92-28-136-10z"/>' +
-  '<path d="M392 156c-44-18-96-18-136 10v206c40-28 92-28 136-10z"/>' +
-  "</g></svg>";
+const genericCoverSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="cover-gold" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#fbe28f"/>
+      <stop offset="0.42" stop-color="#f0bd5c"/>
+      <stop offset="0.74" stop-color="#d99a2e"/>
+      <stop offset="1" stop-color="#b9791a"/>
+    </linearGradient>
+    <linearGradient id="cover-gold-tri" x1="0.2" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7d67d"/>
+      <stop offset="0.55" stop-color="#e5a93c"/>
+      <stop offset="1" stop-color="#c07f1b"/>
+    </linearGradient>
+    <radialGradient id="cover-glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#e8a24a" stop-opacity="0.45"/>
+      <stop offset="1" stop-color="#e8a24a" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" fill="#151515"/>
+  <ellipse cx="256" cy="256" rx="196" ry="196" fill="url(#cover-glow)"/>
+  <g transform="translate(256 256) scale(0.86) translate(-256 -256)">
+    <rect x="92" y="108" width="176" height="296" rx="64" fill="url(#cover-gold)"/>
+    <path d="M398.1 242.1 Q420 256 398.1 269.9 L323.9 317.1 Q302 331 302 305 L302 207 Q302 181 323.9 194.9 Z" fill="url(#cover-gold-tri)"/>
+  </g>
+</svg>`;
 
 export const GENERIC_COVER = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(
   genericCoverSvg,
