@@ -35,7 +35,17 @@ let pendingSaved: AudiobookState | undefined;
 let scrubbing = false;
 let lastPositionSync = 0;
 
+let loadGeneration = 0;
+let fileReady = false;
+let metadataReady = false;
+
 const saver = new ThrottledSaver(persistNow, 5000);
+
+function syncLoading(): void {
+  const loading = !fileReady || !metadataReady;
+  state.loading = loading;
+  ui.setLoading(loading);
+}
 
 function persistNow(): void {
   if (!state.bookId || !state.file) return;
@@ -109,6 +119,11 @@ function applyMetadata(meta: BookMetadata): void {
 async function openBook(file: File, handle?: FileSystemFileHandle): Promise<void> {
   releaseCurrent();
 
+  const generation = ++loadGeneration;
+  fileReady = false;
+  metadataReady = false;
+  syncLoading();
+
   state.file = file;
   state.bookId = getBookId(file);
   setLastBookId(state.bookId);
@@ -145,7 +160,12 @@ async function openBook(file: File, handle?: FileSystemFileHandle): Promise<void
 
   void loadBookMetadata(file)
     .then(applyMetadata)
-    .catch((error) => console.warn("[plaudio] metadata no disponible", error));
+    .catch((error) => console.warn("[plaudio] metadata no disponible", error))
+    .finally(() => {
+      if (generation !== loadGeneration) return;
+      metadataReady = true;
+      syncLoading();
+    });
 }
 
 async function pickAndOpen(): Promise<void> {
@@ -208,6 +228,8 @@ function onLoadedMetadata(): void {
   }
 
   state.canPlay = true;
+  fileReady = true;
+  syncLoading();
   ui.renderProgress(state.currentTime, state.duration);
   updateChapterFromTime(true);
   media.syncPosition();
@@ -237,7 +259,7 @@ async function togglePlay(): Promise<void> {
 }
 
 function changeRate(rate: number): void {
-  const options = [0.75, 1, 1.25, 1.5, 1.75, 2];
+  const options = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5];
   const next =
     options.find((option) => option === Math.round(rate * 100) / 100) ??
     options.reduce((closest, option) =>
@@ -362,6 +384,8 @@ audio.addEventListener("error", () => {
     ui.setError("Playback error.");
   }
   state.canPlay = false;
+  fileReady = true;
+  syncLoading();
 });
 
 document.addEventListener("fullscreenchange", () => {
@@ -393,11 +417,11 @@ document.addEventListener("keydown", (event) => {
       break;
     case "ArrowUp":
       event.preventDefault();
-      changeRate(state.playbackRate + 0.25);
+      changeRate(state.playbackRate + 0.1);
       break;
     case "ArrowDown":
       event.preventDefault();
-      changeRate(state.playbackRate - 0.25);
+      changeRate(state.playbackRate - 0.1);
       break;
     case "m":
       audio.muted = !audio.muted;

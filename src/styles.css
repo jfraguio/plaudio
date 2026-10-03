@@ -247,6 +247,7 @@ body {
 }
 
 .cover-wrap {
+  position: relative;
   width: min(84vw, 21rem);
   aspect-ratio: 1 / 1;
   border-radius: var(--radius-cover);
@@ -255,6 +256,38 @@ body {
   box-shadow:
     0 24px 60px rgba(0, 0, 0, 0.55),
     0 0 60px rgba(232, 162, 74, 0.12);
+}
+
+.cover-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+  background: rgba(18, 18, 18, 0.55);
+}
+
+.loading-text {
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  color: var(--muted-strong);
+}
+
+.spinner {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 3px solid rgba(245, 245, 243, 0.22);
+  border-top-color: var(--accent);
+  animation: spinner-rotate 0.8s linear infinite;
+}
+
+@keyframes spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .cover {

@@ -55,6 +55,7 @@ export class UI {
   private readonly emptyState = el<HTMLElement>("empty-state");
   private readonly playerSection = el<HTMLElement>("player");
   private readonly cover = el<HTMLImageElement>("cover");
+  private readonly coverLoading = el<HTMLElement>("cover-loading");
   private readonly bookTitle = el<HTMLElement>("book-title");
   private readonly bookAuthor = el<HTMLElement>("book-author");
   private readonly chapterTitle = el<HTMLElement>("chapter-title");
@@ -162,6 +163,10 @@ export class UI {
 
   setCover(url: string | undefined): void {
     this.cover.src = url ?? GENERIC_COVER;
+  }
+
+  setLoading(active: boolean): void {
+    this.coverLoading.hidden = !active;
   }
 
   setBookTitle(title: string): void {
