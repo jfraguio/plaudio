@@ -1,5 +1,5 @@
-import { parseMp4 } from "./mp4/parse";
-import type { BookMetadata } from "./types";
+import { parseMoov, readChapters, type ParsedMoov } from "./mp4/parse";
+import type { BookMetadata, Chapter } from "./types";
 import { titleFromFilename } from "./utils";
 
 const TITLE_KEYS = ["\u00A9nam", "@sti", "\u00A9alb", "\u00A9@alb"];
@@ -18,40 +18,48 @@ function clean(value: string | undefined): string | undefined {
   return cleaned.length > 0 ? cleaned : undefined;
 }
 
-/**
- * Lee metadata, carátula y capítulos del contenedor MP4/M4A/M4B leyendo
- * únicamente el átomo `moov` y los samples de la pista de capítulos.
- */
-export async function loadBookMetadata(file: File): Promise<BookMetadata> {
-  try {
-    const parsed = await parseMp4(file);
-    const text = parsed.ilst.text;
-    const freeform = parsed.ilst.freeform;
-
-    const title =
+function toMetadata(file: File, parsed: ParsedMoov): BookMetadata {
+  const { text, freeform } = parsed.ilst;
+  return {
+    title:
       firstNonEmpty(TITLE_KEYS.map((key) => text[key])) ??
       clean(freeform["TITLE"]) ??
       clean(freeform["\u00A9nam"]) ??
-      titleFromFilename(file.name);
-
-    const author =
+      titleFromFilename(file.name),
+    author:
       firstNonEmpty(AUTHOR_KEYS.map((key) => text[key])) ??
       clean(freeform["AUTHOR"]) ??
-      clean(freeform["ARTIST"]);
+      clean(freeform["ARTIST"]),
+    subtitle: clean(freeform["SUBTITLE"]) ?? clean(text["\u00A9sub"]),
+    artwork: parsed.ilst.artwork,
+    duration: parsed.duration > 0 ? parsed.duration : undefined,
+  };
+}
 
-    const subtitle =
-      clean(freeform["SUBTITLE"]) ?? clean(text["\u00A9sub"]) ?? undefined;
+export interface MetadataLoad {
+  /** Título, autor, carátula y duración: sólo requiere leer el `moov` (milisegundos). */
+  metadata: Promise<BookMetadata>;
+  /** Capítulos: requiere además leer los títulos desde `mdat`. Nunca rechaza. */
+  chapters: Promise<Chapter[]>;
+}
 
-    return {
-      title,
-      author,
-      subtitle,
-      artwork: parsed.ilst.artwork,
-      duration: parsed.duration > 0 ? parsed.duration : undefined,
-      chapters: parsed.chapters,
-    };
-  } catch (error) {
-    console.warn("[plaudio] no se pudo leer la metadata", error);
-    return { title: titleFromFilename(file.name), chapters: [] };
-  }
+/**
+ * Lee metadata y capítulos del contenedor MP4/M4A/M4B en dos fases, para que
+ * título y carátula no esperen a los capítulos. Nunca lee el audio.
+ */
+export function loadBookMetadata(file: File): MetadataLoad {
+  const parsed = parseMoov(file);
+
+  const metadata = parsed
+    .then((moov) => toMetadata(file, moov))
+    .catch((error: unknown) => {
+      console.warn("[plaudio] no se pudo leer la metadata", error);
+      return { title: titleFromFilename(file.name) } satisfies BookMetadata;
+    });
+
+  const chapters = parsed
+    .then((moov) => readChapters(file, moov))
+    .catch(() => [] as Chapter[]);
+
+  return { metadata, chapters };
 }

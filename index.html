@@ -37,20 +37,8 @@
             </svg>
           </button>
           <div id="app-menu" class="app-menu" role="menu" hidden>
-            <button id="menu-continue" class="menu-item" type="button" role="menuitem" hidden>
-              Continue
-            </button>
-            <button id="menu-open" class="menu-item" type="button" role="menuitem">Open</button>
-            <button
-              id="menu-fullscreen"
-              class="menu-item menu-item-toggle"
-              type="button"
-              role="menuitem"
-            >
-              <span>Fullscreen</span>
-              <svg class="menu-check" viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M5 12.5l4.2 4.2L19 7" />
-              </svg>
+            <button id="menu-open" class="menu-item" type="button" role="menuitem" hidden>
+              Open
             </button>
             <button id="menu-info" class="menu-item" type="button" role="menuitem">Info</button>
           </div>
@@ -60,7 +48,12 @@
       <main class="app-main">
         <section id="empty-state" class="empty-state">
           <p class="tagline">Your <span class="tagline-gold">P</span>ersona<span class="tagline-gold">l</span><br /><span class="tagline-gold">Audio</span>book Player</p>
-          <button id="open-button" class="primary-button" type="button">Open</button>
+          <div class="empty-actions">
+            <button id="open-button" class="primary-button" type="button">Open</button>
+            <button id="continue-button" class="secondary-button" type="button" hidden>
+              Continue
+            </button>
+          </div>
           <input
             id="file-input"
             class="visually-hidden"
@@ -91,7 +84,7 @@
               type="range"
               min="0"
               max="100"
-              step="1"
+              step="any"
               value="0"
               aria-label="Playback position"
               disabled
@@ -139,16 +132,7 @@
             <div class="bottom-control speed-control">
               <span id="rate-value" class="control-value">1&times;</span>
               <span class="control-label">Speed</span>
-              <select id="rate" class="control-select" aria-label="Playback speed">
-                <option value="0.8">0.8&times;</option>
-                <option value="0.9">0.9&times;</option>
-                <option value="1" selected>1&times;</option>
-                <option value="1.1">1.1&times;</option>
-                <option value="1.2">1.2&times;</option>
-                <option value="1.3">1.3&times;</option>
-                <option value="1.4">1.4&times;</option>
-                <option value="1.5">1.5&times;</option>
-              </select>
+              <select id="rate" class="control-select" aria-label="Playback speed"></select>
             </div>
 
             <span class="bottom-divider" aria-hidden="true"></span>
@@ -191,18 +175,30 @@
           </button>
         </div>
         <div class="info-content">
-          <p class="info-app">PLAUDIO</p>
-          <p class="info-tagline">Your <span class="tagline-gold">P</span>ersona<span class="tagline-gold">l</span> <span class="tagline-gold">Audio</span>book Player</p>
-          <p class="info-text">
-            Plays audiobooks stored on your device.
-          </p>
-          <h3 class="info-heading">Supported formats</h3>
-          <ul class="info-list">
-            <li><span>M4B</span><span class="info-ext">.m4b</span></li>
-            <li><span>M4A</span><span class="info-ext">.m4a</span></li>
-            <li><span>MP4</span><span class="info-ext">.mp4</span></li>
-            <li><span>M4V · MOV</span><span class="info-ext">.m4v · .mov</span></li>
-          </ul>
+          <section id="info-book" class="info-section info-book" hidden>
+            <h3 class="info-heading">Audiobook</h3>
+            <p id="info-book-title" class="info-book-title"></p>
+            <p id="info-book-author" class="info-book-author" hidden></p>
+            <div class="info-progress">
+              <span id="info-percent" class="info-percent">0%</span>
+              <span class="info-percent-label">listened</span>
+            </div>
+            <div class="info-bar" aria-hidden="true"><span id="info-bar-fill"></span></div>
+            <p id="info-position" class="info-position"></p>
+          </section>
+
+          <section class="info-section info-about">
+            <p class="info-app">PLAUDIO</p>
+            <p class="info-tagline">Your <span class="tagline-gold">P</span>ersona<span class="tagline-gold">l</span> <span class="tagline-gold">Audio</span>book Player</p>
+            <p class="info-text">Plays audiobooks stored on your device.</p>
+            <ul class="info-formats" aria-label="Supported formats">
+              <li>.m4b</li>
+              <li>.m4a</li>
+              <li>.mp4</li>
+              <li>.m4v</li>
+              <li>.mov</li>
+            </ul>
+          </section>
         </div>
       </dialog>
     </div>

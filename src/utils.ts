@@ -78,8 +78,10 @@ export class ThrottledSaver {
   }
 }
 
-export async function arrayBufferFrom(blob: Blob): Promise<ArrayBuffer> {
-  return await blob.arrayBuffer();
+/** Porcentaje entero escuchado; sólo llega a 100 al alcanzar el final. */
+export function listenedPercent(position: number, duration: number): number {
+  if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(position)) return 0;
+  return Math.floor(clamp(position / duration, 0, 1) * 100);
 }
 
 export function toBlobUrl(bytes: Uint8Array, mime: string): string {

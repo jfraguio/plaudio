@@ -4,6 +4,7 @@ import {
   clamp,
   formatTime,
   getBookId,
+  listenedPercent,
   titleFromFilename,
 } from "./utils";
 
@@ -82,5 +83,24 @@ describe("ThrottledSaver", () => {
     saver.schedule();
     saver.flush();
     expect(fn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("listenedPercent", () => {
+  it("devuelve 0 sin duración válida", () => {
+    expect(listenedPercent(10, 0)).toBe(0);
+    expect(listenedPercent(10, Number.NaN)).toBe(0);
+    expect(listenedPercent(Number.NaN, 100)).toBe(0);
+  });
+
+  it("redondea hacia abajo y sólo marca 100 al final", () => {
+    expect(listenedPercent(42.9, 100)).toBe(42);
+    expect(listenedPercent(99.99, 100)).toBe(99);
+    expect(listenedPercent(100, 100)).toBe(100);
+  });
+
+  it("limita a [0, 100]", () => {
+    expect(listenedPercent(-5, 100)).toBe(0);
+    expect(listenedPercent(500, 100)).toBe(100);
   });
 });

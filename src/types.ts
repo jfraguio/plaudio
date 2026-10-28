@@ -27,7 +27,6 @@ export interface BookMetadata {
   subtitle?: string;
   artwork?: Artwork;
   duration?: number;
-  chapters: Chapter[];
 }
 
 export interface AppState {
@@ -38,15 +37,11 @@ export interface AppState {
   title: string;
   author?: string;
   coverUrl?: string;
-  genericCover: boolean;
 
   duration: number;
-  currentTime: number;
 
   playbackRate: number;
   playing: boolean;
-  canPlay: boolean;
-  loading: boolean;
 
   chapters: Chapter[];
   currentChapterIndex: number;
@@ -58,13 +53,8 @@ export function createInitialState(): AppState {
   return {
     title: "",
     duration: 0,
-    currentTime: 0,
     playbackRate: 1,
     playing: false,
-    canPlay: false,
-    loading: false,
-    coverUrl: undefined,
-    genericCover: true,
     chapters: [],
     currentChapterIndex: -1,
   };

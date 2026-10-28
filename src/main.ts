@@ -1,23 +1,39 @@
 import "./styles.css";
-import { currentChapterIndex, nextChapterIndex, previousChapterIndex } from "./chapters";
+import {
+  chapterRange,
+  currentChapterIndex,
+  nextChapterIndex,
+  previousChapterIndex,
+} from "./chapters";
 import { fileFromHandle, pickFile, supportsFileSystemAccess } from "./file-access";
-import { isFullscreen, toggleFullscreen } from "./fullscreen";
 import { MediaSessionController } from "./media-session";
 import { loadBookMetadata } from "./metadata";
 import {
   buildStateRecord,
   getFileHandle,
   getLastBookId,
-  isPersistenceAvailable,
   loadBookState,
   saveBookState,
   saveFileHandle,
   setLastBookId,
 } from "./persistence";
 import { Player, SEEK_BACKWARD, SEEK_FORWARD } from "./player";
-import { createInitialState, type AudiobookState, type BookMetadata } from "./types";
-import { UI } from "./ui";
-import { ThrottledSaver, clamp, formatTime, getBookId, titleFromFilename, toBlobUrl } from "./utils";
+import { DEFAULT_RATE, nearestRate, stepRate } from "./rates";
+import {
+  createInitialState,
+  type AudiobookState,
+  type BookMetadata,
+  type Chapter,
+} from "./types";
+import { UI, type BookSummary } from "./ui";
+import {
+  ThrottledSaver,
+  formatTime,
+  getBookId,
+  listenedPercent,
+  titleFromFilename,
+  toBlobUrl,
+} from "./utils";
 
 const audio = document.createElement("audio");
 audio.preload = "metadata";
@@ -32,6 +48,8 @@ const ui = new UI();
 const state = createInitialState();
 
 let pendingSaved: AudiobookState | undefined;
+/** Último libro persistido; se usa en portada (Continue / Info) sin libro abierto. */
+let lastSaved: AudiobookState | undefined;
 let scrubbing = false;
 let lastPositionSync = 0;
 
@@ -42,13 +60,12 @@ let metadataReady = false;
 const saver = new ThrottledSaver(persistNow, 5000);
 
 function syncLoading(): void {
-  const loading = !fileReady || !metadataReady;
-  state.loading = loading;
-  ui.setLoading(loading);
+  ui.setLoading(!fileReady || !metadataReady);
 }
 
 function persistNow(): void {
-  if (!state.bookId || !state.file) return;
+  // Hasta `loadedmetadata` no se ha aplicado la posición guardada: guardar ahora la pisaría con 0.
+  if (!state.bookId || !state.file || !fileReady) return;
   const duration = Number.isFinite(player.duration) ? player.duration : state.duration;
   void saveBookState(
     buildStateRecord({
@@ -78,6 +95,40 @@ function releaseCurrent(): void {
   audio.load();
 }
 
+/** Pinta la barra de progreso acotada al capítulo actual. */
+function renderProgress(preview?: number): void {
+  const range = chapterRange(state.chapters, state.currentChapterIndex, state.duration);
+  ui.renderProgress(range, player.currentTime, preview);
+}
+
+function bookSummary(): BookSummary | null {
+  if (state.bookId) {
+    const position = player.currentTime;
+    return {
+      title: state.title,
+      author: state.author,
+      position,
+      duration: state.duration,
+      percent: listenedPercent(position, state.duration),
+      chapterIndex: state.currentChapterIndex,
+      chapterCount: state.chapters.length,
+    };
+  }
+  if (lastSaved) {
+    const duration = lastSaved.duration ?? 0;
+    return {
+      title: lastSaved.title ?? titleFromFilename(lastSaved.filename),
+      author: lastSaved.author,
+      position: lastSaved.position,
+      duration,
+      percent: listenedPercent(lastSaved.position, duration),
+      chapterIndex: -1,
+      chapterCount: 0,
+    };
+  }
+  return null;
+}
+
 function updateChapterFromTime(force: boolean): void {
   const index = currentChapterIndex(state.chapters, player.currentTime);
   if (index === state.currentChapterIndex && !force) return;
@@ -96,30 +147,34 @@ function applyMetadata(meta: BookMetadata): void {
   if (meta.artwork) {
     if (state.coverUrl) URL.revokeObjectURL(state.coverUrl);
     state.coverUrl = toBlobUrl(meta.artwork.bytes, meta.artwork.mime);
-    state.genericCover = false;
     ui.setCover(state.coverUrl);
   }
 
-  if (meta.chapters.length > 0) state.chapters = meta.chapters;
   if (meta.duration && meta.duration > 0 && !state.duration) state.duration = meta.duration;
 
   ui.setBookTitle(state.title);
   ui.setAuthor(state.author);
+  renderProgress();
+  media.setBook({
+    title: state.title,
+    author: state.author,
+    cover: state.coverUrl && meta.artwork ? { src: state.coverUrl, type: meta.artwork.mime } : undefined,
+  });
+}
+
+function applyChapters(chapters: Chapter[]): void {
+  if (chapters.length === 0) return;
+  state.chapters = chapters;
   ui.renderChapters(state);
   updateChapterFromTime(true);
-  ui.renderProgress(player.currentTime, state.duration);
-  media.setBook({ title: state.title, author: state.author, coverUrl: state.coverUrl });
-  media.setChapter(
-    state.currentChapterIndex >= 0
-      ? state.chapters[state.currentChapterIndex]?.title
-      : undefined,
-  );
+  renderProgress();
 }
 
 async function openBook(file: File, handle?: FileSystemFileHandle): Promise<void> {
   releaseCurrent();
 
   const generation = ++loadGeneration;
+  pendingSaved = undefined;
   fileReady = false;
   metadataReady = false;
   syncLoading();
@@ -133,39 +188,45 @@ async function openBook(file: File, handle?: FileSystemFileHandle): Promise<void
   state.chapters = [];
   state.currentChapterIndex = -1;
   state.duration = 0;
-  state.currentTime = 0;
-  state.playbackRate = 1;
+  state.playbackRate = DEFAULT_RATE;
   state.playing = false;
-  state.canPlay = false;
   state.coverUrl = undefined;
-  state.genericCover = true;
 
   ui.setError(null);
   ui.showPlayer();
-  ui.setMenuState({ hasBook: true, canContinue: false });
+  ui.setMenuState({ hasBook: true });
   ui.setBookTitle(state.title);
   ui.setAuthor(undefined);
   ui.setChapterTitle(undefined);
   ui.setCover(undefined);
-  ui.renderRate(1);
+  ui.renderRate(DEFAULT_RATE);
   ui.renderPlayState(false);
   ui.renderChapters(state);
-  ui.renderProgress(0, 0);
+  renderProgress();
 
   state.objectUrl = URL.createObjectURL(file);
   player.load(state.objectUrl);
-
-  pendingSaved = await loadBookState(state.bookId);
   media.setBook({ title: state.title });
 
-  void loadBookMetadata(file)
-    .then(applyMetadata)
-    .catch((error) => console.warn("[plaudio] metadata no disponible", error))
-    .finally(() => {
-      if (generation !== loadGeneration) return;
+  // Metadata y progreso guardado se leen en paralelo; cada resultado se
+  // descarta si entretanto se ha abierto otro libro.
+  const isCurrent = () => generation === loadGeneration;
+  const load = loadBookMetadata(file);
+  void load.metadata.then((meta) => {
+    if (!isCurrent()) return;
+    try {
+      applyMetadata(meta);
+    } finally {
       metadataReady = true;
       syncLoading();
-    });
+    }
+  });
+  void load.chapters.then((chapters) => {
+    if (isCurrent()) applyChapters(chapters);
+  });
+
+  const saved = await loadBookState(state.bookId);
+  if (isCurrent()) pendingSaved = saved;
 }
 
 async function pickAndOpen(): Promise<void> {
@@ -217,29 +278,24 @@ function onLoadedMetadata(): void {
 
     if (position > 5) {
       player.seekTo(position);
-      state.currentTime = position;
       ui.showToast(`Resuming from ${formatTime(position, state.duration >= 3600)}`);
     }
 
-    const rate = clamp(saved.playbackRate || 1, 0.5, 3);
-    state.playbackRate = rate;
-    player.setRate(rate);
-    ui.renderRate(rate);
+    setRate(saved.playbackRate);
   }
 
-  state.canPlay = true;
   fileReady = true;
   syncLoading();
-  ui.renderProgress(state.currentTime, state.duration);
   updateChapterFromTime(true);
+  renderProgress();
   media.syncPosition();
 }
 
 function onTimeUpdate(): void {
-  state.currentTime = player.currentTime;
-  if (!scrubbing) ui.renderProgress(state.currentTime, state.duration);
-  saver.schedule();
   updateChapterFromTime(false);
+  if (!scrubbing) renderProgress();
+  if (ui.infoOpen) ui.renderBookSummary(bookSummary());
+  saver.schedule();
 
   const now = Date.now();
   if (now - lastPositionSync > 1000) {
@@ -258,23 +314,23 @@ async function togglePlay(): Promise<void> {
   }
 }
 
-function changeRate(rate: number): void {
-  const options = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5];
-  const next =
-    options.find((option) => option === Math.round(rate * 100) / 100) ??
-    options.reduce((closest, option) =>
-      Math.abs(option - rate) < Math.abs(closest - rate) ? option : closest,
-    );
-  player.setRate(next);
+/** Aplica una velocidad de la lista; `ratechange` actualiza estado, UI y persistencia. */
+function setRate(rate: number): void {
+  player.setRate(nearestRate(rate));
+}
+
+function seekBy(delta: number): void {
+  player.seekBy(delta);
+  saver.flush();
+  media.syncPosition();
 }
 
 function goToChapter(index: number): void {
   const chapter = state.chapters[index];
   if (!chapter) return;
   player.seekTo(chapter.startTime);
-  state.currentTime = chapter.startTime;
-  ui.renderProgress(state.currentTime, state.duration);
   updateChapterFromTime(true);
+  renderProgress();
   if (state.playing) saver.schedule();
   else saver.flush();
   media.syncPosition();
@@ -283,16 +339,8 @@ function goToChapter(index: number): void {
 // --- Event wiring ---------------------------------------------------------
 
 const media = new MediaSessionController(player, {
-  onSeekBackward: () => {
-    player.seekBy(-SEEK_BACKWARD);
-    saver.flush();
-    media.syncPosition();
-  },
-  onSeekForward: () => {
-    player.seekBy(SEEK_FORWARD);
-    saver.flush();
-    media.syncPosition();
-  },
+  onSeekBackward: () => seekBy(-SEEK_BACKWARD),
+  onSeekForward: () => seekBy(SEEK_FORWARD),
   onPrevious: () => goToChapter(previousChapterIndex(state.chapters, state.currentChapterIndex)),
   onNext: () => goToChapter(nextChapterIndex(state.chapters, state.currentChapterIndex)),
 });
@@ -301,42 +349,27 @@ media.bind();
 ui.bind({
   onPick: () => void pickAndOpen(),
   onContinue: () => void continueLastBook(),
-  onFullscreen: () => void toggleFullscreen(),
+  onInfo: () => ui.openInfo(bookSummary()),
   onFiles: (files) => {
     const file = files?.[0];
     if (file) void openBook(file);
   },
   onToggle: () => void togglePlay(),
-  onBack: () => {
-    player.seekBy(-SEEK_BACKWARD);
-    saver.flush();
-    media.syncPosition();
-  },
-  onForward: () => {
-    player.seekBy(SEEK_FORWARD);
-    saver.flush();
-    media.syncPosition();
-  },
+  onBack: () => seekBy(-SEEK_BACKWARD),
+  onForward: () => seekBy(SEEK_FORWARD),
   onSeekInput: (time) => {
     scrubbing = true;
-    ui.renderProgress(state.currentTime, state.duration, time);
+    renderProgress(time);
   },
   onSeekCommit: (time) => {
     scrubbing = false;
     player.seekTo(time);
-    state.currentTime = time;
-    ui.renderProgress(state.currentTime, state.duration);
     updateChapterFromTime(true);
+    renderProgress();
     saver.flush();
     media.syncPosition();
   },
-  onRate: (rate) => {
-    player.setRate(rate);
-    state.playbackRate = rate;
-    ui.renderRate(rate);
-    saver.flush();
-    media.syncPosition();
-  },
+  onRate: (rate) => setRate(rate),
   onChapter: (index) => goToChapter(index),
 });
 
@@ -344,18 +377,15 @@ audio.addEventListener("loadedmetadata", onLoadedMetadata);
 audio.addEventListener("durationchange", () => {
   if (Number.isFinite(audio.duration) && audio.duration > state.duration) {
     state.duration = audio.duration;
-    ui.renderProgress(player.currentTime, state.duration);
+    renderProgress();
   }
 });
 audio.addEventListener("timeupdate", onTimeUpdate);
 audio.addEventListener("ratechange", () => {
   state.playbackRate = audio.playbackRate;
   ui.renderRate(audio.playbackRate);
-  saver.schedule();
+  saver.flush();
   media.syncPosition();
-});
-audio.addEventListener("canplay", () => {
-  state.canPlay = true;
 });
 audio.addEventListener("play", () => {
   state.playing = true;
@@ -383,45 +413,48 @@ audio.addEventListener("error", () => {
   } else if (code) {
     ui.setError("Playback error.");
   }
-  state.canPlay = false;
   fileReady = true;
   syncLoading();
-});
-
-document.addEventListener("fullscreenchange", () => {
-  ui.setFullscreenState(isFullscreen());
 });
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "hidden") saver.flush();
 });
 window.addEventListener("pagehide", () => saver.flush());
-window.addEventListener("beforeunload", () => saver.flush());
 
 document.addEventListener("keydown", (event) => {
+  if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (!state.objectUrl || ui.dialogOpen) return;
   const target = event.target as HTMLElement | null;
-  if (target && /^(INPUT|SELECT|TEXTAREA)$/.test(target.tagName)) return;
+  if (target && (/^(INPUT|SELECT|TEXTAREA)$/.test(target.tagName) || target.isContentEditable)) {
+    return;
+  }
+
   switch (event.key) {
     case " ":
-    case "k":
+      // Un botón enfocado se activa con espacio de forma nativa.
+      if (target?.tagName === "BUTTON") return;
       event.preventDefault();
-      void togglePlay();
+      if (!event.repeat) void togglePlay();
+      break;
+    case "k":
+      if (!event.repeat) void togglePlay();
       break;
     case "ArrowLeft":
-      player.seekBy(-5);
-      saver.flush();
+      event.preventDefault();
+      seekBy(-5);
       break;
     case "ArrowRight":
-      player.seekBy(5);
-      saver.flush();
+      event.preventDefault();
+      seekBy(5);
       break;
     case "ArrowUp":
       event.preventDefault();
-      changeRate(state.playbackRate + 0.1);
+      setRate(stepRate(state.playbackRate, 1));
       break;
     case "ArrowDown":
       event.preventDefault();
-      changeRate(state.playbackRate - 0.1);
+      setRate(stepRate(state.playbackRate, -1));
       break;
     case "m":
       audio.muted = !audio.muted;
@@ -433,9 +466,16 @@ document.addEventListener("keydown", (event) => {
 
 ui.showEmpty();
 ui.setCover(undefined);
-ui.setMenuState({ hasBook: false, canContinue: Boolean(getLastBookId()) });
-ui.setFullscreenState(isFullscreen());
-void isPersistenceAvailable();
+ui.setMenuState({ hasBook: false });
+ui.setCanContinue(Boolean(getLastBookId()));
+void (async () => {
+  const id = getLastBookId();
+  if (!id) return;
+  lastSaved = await loadBookState(id);
+  if (lastSaved && !state.bookId) {
+    ui.setCanContinue(true, lastSaved.title ?? lastSaved.filename);
+  }
+})();
 
 if ("serviceWorker" in navigator && import.meta.env.PROD) {
   window.addEventListener("load", () => {

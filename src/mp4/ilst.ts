@@ -82,8 +82,7 @@ function parseIlstBox(bytes: Uint8Array, ilst: RawBox, data: IlstData): void {
 }
 
 /**
- * Extrae la metadata estilo iTunes (`udta/meta/ilst`) del buffer del `moov`,
- * que MP4Box no expone en esta versión.
+ * Extrae la metadata estilo iTunes (`udta/meta/ilst`) del buffer del `moov`.
  */
 export function parseIlst(moov: Uint8Array): IlstData {
   const data: IlstData = { text: {}, freeform: {} };

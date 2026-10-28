@@ -1,87 +1,53 @@
-import { createFile, type Movie, type Sample } from "mp4box";
 import type { Chapter } from "../types";
-import { buildDefaultFtyp, locateMoov, type MoovLayout } from "./atoms";
+import { locateMoov } from "./atoms";
 import { readBoxes, type RawBox } from "./boxreader";
 import { parseIlst, type IlstData } from "./ilst";
+import { parseMovie, type SampleRef } from "./movie";
 
-export interface ParsedMp4 {
+export interface ParsedMoov {
+  /** Duración en segundos (0 si no se conoce). */
   duration: number;
-  chapters: Chapter[];
   ilst: IlstData;
-  chapterTrackId?: number;
-  codec?: string;
+  chapterSamples: SampleRef[];
+  /** Bytes del `moov`, necesarios para el fallback de capítulos `chpl`. */
+  moov: Uint8Array;
 }
 
 const MAX_CHAPTER_SAMPLE_BYTES = 128 * 1024;
-
-function withSilencedConsole<T>(fn: () => T): T {
-  const original = { error: console.error, warn: console.warn, log: console.log };
-  console.error = () => {};
-  console.warn = () => {};
-  console.log = () => {};
-  try {
-    return fn();
-  } finally {
-    console.error = original.error;
-    console.warn = original.warn;
-    console.log = original.log;
-  }
-}
+/** Si todas las muestras de capítulo caben en este tramo, se leen de una vez. */
+const MAX_COALESCED_READ = 1024 * 1024;
 
 async function readBytes(file: Blob, start: number, size: number): Promise<Uint8Array> {
   const buffer = await file.slice(start, start + size).arrayBuffer();
   return new Uint8Array(buffer);
 }
 
-async function parseWithMp4box(
-  file: Blob,
-  layout: MoovLayout,
-  moovBytes: Uint8Array,
-): Promise<{ movie: Movie; iso: ReturnType<typeof createFile> }> {
-  let header: Uint8Array;
-  if (layout.ftyp) {
-    header = await readBytes(file, layout.ftyp.start, layout.ftyp.size);
-  } else {
-    header = buildDefaultFtyp();
-  }
-
-  const combined = new Uint8Array(header.byteLength + moovBytes.byteLength);
-  combined.set(header, 0);
-  combined.set(moovBytes, header.byteLength);
-
-  const buffer = combined.buffer as ArrayBuffer & { fileStart: number };
-  buffer.fileStart = 0;
-
-  const iso = createFile();
-  return await new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error("MOOV_PARSE_TIMEOUT")), 20000);
-    iso.onReady = (info: Movie) => {
-      clearTimeout(timeout);
-      resolve({ movie: info, iso });
-    };
-    iso.onError = () => {
-      /* MP4Box avisa de cajas no reconocidas (p. ej. ilst); se ignora. */
-    };
-    try {
-      withSilencedConsole(() => {
-        iso.appendBuffer(buffer as never, true);
-      });
-    } catch (error) {
-      clearTimeout(timeout);
-      reject(error instanceof Error ? error : new Error(String(error)));
-    }
-  });
+/**
+ * Fase rápida: localiza y lee el `moov`, y extrae metadata, duración y la
+ * ubicación de los títulos de capítulo. No lee nada de `mdat`.
+ */
+export async function parseMoov(file: Blob): Promise<ParsedMoov> {
+  const layout = await locateMoov(file);
+  const moov = await readBytes(file, layout.moov.start, layout.moov.size);
+  const movie = parseMovie(moov);
+  return {
+    duration: movie.duration,
+    ilst: parseIlst(moov),
+    chapterSamples: movie.chapterSamples,
+    moov,
+  };
 }
 
-function findChapterTrackId(movie: Movie): number | undefined {
-  const audio = movie.audioTracks[0] ?? movie.tracks.find((track) => track.type === "audio");
-  const reference = audio?.references?.find((ref) => ref.type === "chap");
-  if (reference) {
-    const ids = Array.from(reference.track_ids as ArrayLike<number>);
-    if (ids.length > 0) return ids[0];
+/** Fase lenta: lee los títulos de capítulo (pista `tx3g` o, si no hay, `chpl`). */
+export async function readChapters(file: Blob, parsed: ParsedMoov): Promise<Chapter[]> {
+  let chapters = await readChaptersFromSamples(file, parsed.chapterSamples, parsed.duration);
+  if (chapters.length === 0) {
+    chapters = parseChpl(parsed.moov);
+    if (chapters.length > 0 && parsed.duration > 0) {
+      chapters[chapters.length - 1]!.endTime = parsed.duration;
+    }
   }
-  const textTrack = movie.tracks.find((track) => track.codec === "text");
-  return textTrack?.id;
+  return chapters;
 }
 
 function decodeTx3g(bytes: Uint8Array): string {
@@ -100,35 +66,59 @@ function decodeTx3g(bytes: Uint8Array): string {
   return new TextDecoder("utf-8").decode(payload);
 }
 
+/** Lee los textos de las muestras: una sola lectura si están juntas, si no en paralelo. */
+async function readSampleTitles(file: Blob, samples: SampleRef[]): Promise<string[]> {
+  const readable = samples.map(
+    (sample) =>
+      sample.size > 0 &&
+      sample.size <= MAX_CHAPTER_SAMPLE_BYTES &&
+      sample.offset + sample.size <= file.size,
+  );
+  const indices = samples.map((_, index) => index).filter((index) => readable[index]);
+  if (indices.length === 0) return samples.map(() => "");
+
+  const start = Math.min(...indices.map((index) => samples[index]!.offset));
+  const end = Math.max(...indices.map((index) => samples[index]!.offset + samples[index]!.size));
+
+  if (end - start <= MAX_COALESCED_READ) {
+    const block = await readBytes(file, start, end - start);
+    return samples.map((sample, index) =>
+      readable[index]
+        ? decodeTx3g(block.subarray(sample.offset - start, sample.offset - start + sample.size)).trim()
+        : "",
+    );
+  }
+
+  return Promise.all(
+    samples.map(async (sample, index) => {
+      if (!readable[index]) return "";
+      try {
+        return decodeTx3g(await readBytes(file, sample.offset, sample.size)).trim();
+      } catch {
+        return "";
+      }
+    }),
+  );
+}
+
 async function readChaptersFromSamples(
   file: Blob,
-  iso: ReturnType<typeof createFile>,
-  trackId: number,
+  samples: SampleRef[],
   duration: number,
 ): Promise<Chapter[]> {
-  let samples: Sample[];
+  if (samples.length === 0) return [];
+
+  let titles: string[];
   try {
-    samples = iso.getTrackSamplesInfo(trackId);
+    titles = await readSampleTitles(file, samples);
   } catch {
-    return [];
-  }
-  if (!samples || samples.length === 0) return [];
-
-  const chapters: Chapter[] = [];
-  for (const sample of samples) {
-    const startTime = sample.timescale > 0 ? sample.cts / sample.timescale : 0;
-    let title = "";
-    if (sample.size > 0 && sample.size <= MAX_CHAPTER_SAMPLE_BYTES) {
-      try {
-        const bytes = await readBytes(file, sample.offset, sample.size);
-        title = decodeTx3g(bytes).trim();
-      } catch {
-        /* título no disponible */
-      }
-    }
-    chapters.push({ title, startTime });
+    titles = samples.map(() => "");
   }
 
+  const chapters: Chapter[] = samples.map((sample, index) => ({
+    title: titles[index] ?? "",
+    startTime: Math.max(0, sample.time),
+  }));
   chapters.sort((a, b) => a.startTime - b.startTime);
   chapters.forEach((chapter, index) => {
     const next = chapters[index + 1];
@@ -176,7 +166,7 @@ function parseChpl(moov: Uint8Array): Chapter[] {
       pos += 8;
       const length = moov[pos] ?? 0;
       pos += 1;
-      const title = decodeTx3gBytes(moov.subarray(pos, pos + length));
+      const title = new TextDecoder("utf-8").decode(moov.subarray(pos, pos + length)).trim();
       pos += length;
       chapters.push({ title: title || `Chapter ${i + 1}`, startTime: start / 10_000_000 });
     }
@@ -185,51 +175,4 @@ function parseChpl(moov: Uint8Array): Chapter[] {
   } catch {
     return [];
   }
-}
-
-function decodeTx3gBytes(bytes: Uint8Array): string {
-  return new TextDecoder("utf-8").decode(bytes).trim();
-}
-
-export async function parseMp4(file: Blob): Promise<ParsedMp4> {
-  const layout = await locateMoov(file);
-  const moovBytes = await readBytes(file, layout.moov.start, layout.moov.size);
-  const ilst = parseIlst(moovBytes);
-
-  let movie: Movie | undefined;
-  let iso: ReturnType<typeof createFile> | undefined;
-  try {
-    const parsed = await parseWithMp4box(file, layout, moovBytes);
-    movie = parsed.movie;
-    iso = parsed.iso;
-  } catch (error) {
-    console.warn("[plaudio] no se pudo parsear el moov con MP4Box", error);
-  }
-
-  let duration = 0;
-  let chapterTrackId: number | undefined;
-  let chapters: Chapter[] = [];
-
-  if (movie && iso) {
-    duration = movie.timescale > 0 ? movie.duration / movie.timescale : 0;
-    chapterTrackId = findChapterTrackId(movie);
-    if (chapterTrackId !== undefined) {
-      chapters = await readChaptersFromSamples(file, iso, chapterTrackId, duration);
-    }
-  }
-
-  if (chapters.length === 0) {
-    chapters = parseChpl(moovBytes);
-    if (chapters.length > 0 && duration > 0) {
-      chapters[chapters.length - 1]!.endTime = duration;
-    }
-  }
-
-  return {
-    duration,
-    chapters,
-    ilst,
-    chapterTrackId,
-    codec: movie?.audioTracks[0]?.codec,
-  };
 }

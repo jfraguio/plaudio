@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildDefaultFtyp, locateMoov } from "./atoms";
+import { locateMoov } from "./atoms";
 import { ascii, box, byteBlob } from "./test-boxes";
 
 function moovWith(payload: Uint8Array): Uint8Array {
@@ -31,14 +31,5 @@ describe("locateMoov", () => {
   it("lanza si no hay moov", async () => {
     const file = byteBlob([box("ftyp", ascii("isom")), box("mdat", new Uint8Array(8))]);
     await expect(locateMoov(file)).rejects.toThrow("MOOV_NOT_FOUND");
-  });
-});
-
-describe("buildDefaultFtyp", () => {
-  it("genera un ftyp válido", () => {
-    const bytes = buildDefaultFtyp();
-    const view = new DataView(bytes.buffer);
-    expect(view.getUint32(0)).toBe(bytes.length);
-    expect(String.fromCharCode(...bytes.subarray(4, 8))).toBe("ftyp");
   });
 });

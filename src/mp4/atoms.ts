@@ -72,21 +72,3 @@ export async function locateMoov(file: Blob): Promise<MoovLayout> {
 
   throw new Error("MOOV_NOT_FOUND");
 }
-
-export function buildDefaultFtyp(): Uint8Array {
-  const brands = ["isom", "iso2", "mp41", "M4A ", "M4B "];
-  const size = 16 + brands.length * 4;
-  const bytes = new Uint8Array(size);
-  const view = new DataView(bytes.buffer);
-  view.setUint32(0, size);
-  bytes.set([0x66, 0x74, 0x79, 0x70], 4); // ftyp
-  bytes.set([0x69, 0x73, 0x6f, 0x6d], 8); // isom
-  view.setUint32(12, 512);
-  brands.forEach((brand, index) => {
-    bytes.set(
-      [brand.charCodeAt(0), brand.charCodeAt(1), brand.charCodeAt(2), brand.charCodeAt(3)],
-      16 + index * 4,
-    );
-  });
-  return bytes;
-}

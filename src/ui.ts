@@ -1,3 +1,5 @@
+import type { TimeRange } from "./chapters";
+import { DEFAULT_RATE, PLAYBACK_RATES } from "./rates";
 import type { AppState } from "./types";
 import { formatTime } from "./utils";
 
@@ -37,10 +39,20 @@ function el<T extends HTMLElement>(id: string): T {
   return node as T;
 }
 
+export interface BookSummary {
+  title: string;
+  author?: string;
+  position: number;
+  duration: number;
+  percent: number;
+  chapterIndex: number;
+  chapterCount: number;
+}
+
 export interface UIHandlers {
   onPick: () => void;
   onContinue: () => void;
-  onFullscreen: () => void;
+  onInfo: () => void;
   onFiles: (files: FileList | null) => void;
   onToggle: () => void;
   onBack: () => void;
@@ -76,17 +88,31 @@ export class UI {
   private readonly toast = el<HTMLElement>("toast");
   private readonly fileInput = el<HTMLInputElement>("file-input");
   private readonly openButton = el<HTMLButtonElement>("open-button");
+  private readonly continueButton = el<HTMLButtonElement>("continue-button");
   private readonly menuButton = el<HTMLButtonElement>("menu-button");
   private readonly menu = el<HTMLElement>("app-menu");
   private readonly menuOpen = el<HTMLButtonElement>("menu-open");
-  private readonly menuContinue = el<HTMLButtonElement>("menu-continue");
-  private readonly menuFullscreen = el<HTMLButtonElement>("menu-fullscreen");
   private readonly menuInfo = el<HTMLButtonElement>("menu-info");
   private readonly infoDialog = el<HTMLDialogElement>("info-dialog");
   private readonly infoClose = el<HTMLButtonElement>("info-close");
+  private readonly infoBook = el<HTMLElement>("info-book");
+  private readonly infoBookTitle = el<HTMLElement>("info-book-title");
+  private readonly infoBookAuthor = el<HTMLElement>("info-book-author");
+  private readonly infoPercent = el<HTMLElement>("info-percent");
+  private readonly infoBarFill = el<HTMLElement>("info-bar-fill");
+  private readonly infoPosition = el<HTMLElement>("info-position");
 
   private handlers?: UIHandlers;
   private toastTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Inicio absoluto (s) del tramo que representa la barra de progreso. */
+  private rangeStart = 0;
+
+  constructor() {
+    this.rate.replaceChildren(
+      ...PLAYBACK_RATES.map((rate) => new Option(`${rate}×`, String(rate))),
+    );
+    this.renderRate(DEFAULT_RATE);
+  }
 
   bind(handlers: UIHandlers): void {
     this.handlers = handlers;
@@ -97,17 +123,10 @@ export class UI {
     };
     this.openButton.addEventListener("click", pick);
     this.menuOpen.addEventListener("click", pick);
-    this.menuContinue.addEventListener("click", () => {
-      this.closeMenu();
-      handlers.onContinue();
-    });
-    this.menuFullscreen.addEventListener("click", () => {
-      this.closeMenu();
-      handlers.onFullscreen();
-    });
+    this.continueButton.addEventListener("click", () => handlers.onContinue());
     this.menuInfo.addEventListener("click", () => {
       this.closeMenu();
-      this.infoDialog.showModal();
+      handlers.onInfo();
     });
     this.infoClose.addEventListener("click", () => this.infoDialog.close());
     this.infoDialog.addEventListener("click", (event) => {
@@ -136,10 +155,10 @@ export class UI {
     this.forwardButton.addEventListener("click", () => handlers.onForward());
 
     this.seek.addEventListener("input", () => {
-      handlers.onSeekInput(Number(this.seek.value));
+      handlers.onSeekInput(this.rangeStart + Number(this.seek.value));
     });
     this.seek.addEventListener("change", () => {
-      handlers.onSeekCommit(Number(this.seek.value));
+      handlers.onSeekCommit(this.rangeStart + Number(this.seek.value));
     });
 
     this.rate.addEventListener("change", () => handlers.onRate(Number(this.rate.value)));
@@ -182,26 +201,31 @@ export class UI {
     this.chapterTitle.textContent = title ?? "";
   }
 
-  renderProgress(current: number, duration: number, preview?: number): void {
-    const hasDuration = Number.isFinite(duration) && duration > 0;
-    this.seek.disabled = !hasDuration;
-    const value = hasDuration
-      ? Math.min(Math.max(preview ?? current, 0), duration)
-      : Math.max(preview ?? current, 0);
+  /**
+   * Pinta la barra y los tiempos relativos al tramo `range` (normalmente el
+   * capítulo actual). `current` y `preview` son tiempos absolutos del libro.
+   */
+  renderProgress(range: TimeRange, current: number, preview?: number): void {
+    const length = range.end - range.start;
+    const hasLength = Number.isFinite(length) && length > 0;
+    const elapsed = Math.max((preview ?? current) - range.start, 0);
+    this.rangeStart = range.start;
+    this.seek.disabled = !hasLength;
 
-    if (hasDuration) {
-      this.seek.max = String(Math.floor(duration));
-      this.seek.value = String(Math.floor(value));
-      const percent = duration > 0 ? (value / duration) * 100 : 0;
-      this.seek.style.setProperty("--progress", `${percent}%`);
-      this.timeRemaining.textContent = `-${formatTime(Math.max(0, duration - value), true)}`;
+    if (hasLength) {
+      const value = Math.min(elapsed, length);
+      this.seek.max = String(length);
+      this.seek.value = String(value);
+      this.seek.style.setProperty("--progress", `${(value / length) * 100}%`);
+      const forceHours = length >= 3600;
+      this.timeCurrent.textContent = formatTime(value, forceHours);
+      this.timeRemaining.textContent = `-${formatTime(length - value, forceHours)}`;
     } else {
       this.seek.value = "0";
       this.seek.style.setProperty("--progress", "0%");
+      this.timeCurrent.textContent = formatTime(elapsed);
       this.timeRemaining.textContent = "--:--";
     }
-
-    this.timeCurrent.textContent = formatTime(value, hasDuration && duration >= 3600);
   }
 
   renderPlayState(playing: boolean): void {
@@ -217,7 +241,7 @@ export class UI {
   openMenu(): void {
     this.menu.hidden = false;
     this.menuButton.setAttribute("aria-expanded", "true");
-    this.menuOpen.focus();
+    this.menu.querySelector<HTMLButtonElement>(".menu-item:not([hidden])")?.focus();
   }
 
   closeMenu(): void {
@@ -226,13 +250,53 @@ export class UI {
     this.menuButton.setAttribute("aria-expanded", "false");
   }
 
-  setMenuState(params: { hasBook: boolean; canContinue: boolean }): void {
+  setMenuState(params: { hasBook: boolean }): void {
     this.menuOpen.hidden = !params.hasBook;
-    this.menuContinue.hidden = !params.canContinue;
   }
 
-  setFullscreenState(active: boolean): void {
-    this.menuFullscreen.classList.toggle("is-active", active);
+  setCanContinue(canContinue: boolean, title?: string): void {
+    this.continueButton.hidden = !canContinue;
+    if (title) this.continueButton.title = title;
+    else this.continueButton.removeAttribute("title");
+  }
+
+  get infoOpen(): boolean {
+    return this.infoDialog.open;
+  }
+
+  get dialogOpen(): boolean {
+    return this.infoDialog.open || this.chaptersDialog.open;
+  }
+
+  openInfo(summary: BookSummary | null): void {
+    this.renderBookSummary(summary);
+    if (this.infoDialog.open) return;
+    if (typeof this.infoDialog.showModal === "function") this.infoDialog.showModal();
+    else this.infoDialog.setAttribute("open", "");
+  }
+
+  renderBookSummary(summary: BookSummary | null): void {
+    this.infoBook.hidden = !summary;
+    if (!summary) return;
+
+    this.infoBookTitle.textContent = summary.title;
+    this.infoBookAuthor.textContent = summary.author ?? "";
+    this.infoBookAuthor.hidden = !summary.author;
+    this.infoPercent.textContent = `${summary.percent}%`;
+    this.infoBarFill.style.width = `${summary.percent}%`;
+
+    const forceHours = summary.duration >= 3600;
+    const parts: string[] = [];
+    if (summary.duration > 0) {
+      parts.push(
+        `${formatTime(summary.position, forceHours)} / ${formatTime(summary.duration, forceHours)}`,
+      );
+    }
+    if (summary.chapterCount > 0 && summary.chapterIndex >= 0) {
+      parts.push(`Chapter ${summary.chapterIndex + 1} of ${summary.chapterCount}`);
+    }
+    this.infoPosition.textContent = parts.join(" · ");
+    this.infoPosition.hidden = parts.length === 0;
   }
 
   openFileDialog(): void {

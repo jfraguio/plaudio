@@ -10,7 +10,7 @@ export interface MediaSessionCallbacks {
 interface BookInfo {
   title: string;
   author?: string;
-  coverUrl?: string;
+  cover?: { src: string; type: string };
 }
 
 export class MediaSessionController {
@@ -57,9 +57,8 @@ export class MediaSessionController {
   setBook(info: BookInfo): void {
     this.title = info.title || "Plaudio";
     this.author = info.author;
-    this.artwork = info.coverUrl
-      ? [{ src: info.coverUrl, sizes: "512x512", type: "image/jpeg" }]
-      : [];
+    // Sin `sizes`: las dimensiones reales de la carátula no se conocen.
+    this.artwork = info.cover ? [{ src: info.cover.src, type: info.cover.type }] : [];
     this.updateMetadata();
   }
 

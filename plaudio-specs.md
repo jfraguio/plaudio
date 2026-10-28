@@ -53,7 +53,10 @@
 ### 0.2 Decisiones de implementación (resumen)
 
 - **Stack:** Vite + TypeScript + APIs Web estándar. Sin framework de UI.
-- **Dependencia runtime mínima:** `mp4box` (MP4Box.js) para leer `moov`. Nada más.
+- **Sin dependencias runtime.** El `moov` se analiza con un lector propio mínimo
+  (`src/mp4/`). Hasta la v2.0 se usaba MP4Box.js, retirado porque construía la
+  lista de muestras de **todas** las pistas (≈2,3 M objetos en un libro de 15 h:
+  ~0,5 s y ~1 GB de memoria en escritorio) y ocupaba ~185 KB del bundle.
 - **Sin CDN en producción:** todo empaquetado en el build; el Service Worker
   precachea el app shell.
 - **Sin framework de estado:** un objeto `AppState` mutable + funciones de render.
@@ -240,7 +243,7 @@ todo el archivo:
 2. Del tamaño (`u32` big-endian; si `size == 1`, usar `u64`; si `size == 0`, se
    extiende hasta el final) avanzar al siguiente átomo **sin leer su contenido**.
 3. Al encontrar `moov`, hacer `file.slice(moovStart, moovStart + moovSize)` y
-   pasar esos bytes a MP4Box.js.
+   pasar esos bytes al lector propio (`parseIlst` + `parseMovie`).
 
 En el archivo de prueba esto supone leer 3 cabeceras + 10.8 MB del `moov`,
 en lugar de 824 MB.
@@ -251,7 +254,10 @@ Implementación de referencia del escaneo en `src/mp4/atoms.ts`.
 
 ## 6. Selección del audiolibro
 
-Pantalla inicial con una acción principal: **Abrir audiolibro**.
+Pantalla inicial con una acción principal: **Open**. Si hay un audiolibro
+persistido (`lastBookId` en `localStorage`), se muestra además **Continue** debajo
+de Open, que reabre ese libro (vía `FileSystemFileHandle` guardado cuando el
+navegador lo soporta; si no, abre el selector indicando el nombre del archivo).
 
 ```ts
 const file = input.files?.[0];
@@ -332,22 +338,38 @@ Detalles del diseño:
 
 Se evita cualquier elemento no estrictamente necesario. Estados de la UI:
 
-- **Sin libro:** marca + lema + botón "Abrir audiolibro".
+- **Sin libro:** marca + lema + botón **Open** (y **Continue** si hay libro persistido).
 - **Cargando:** indicador discreto.
 - **Listo:** reproductor.
 - **Error:** mensaje + botón para reintentar.
+
+### 8.1 Menú superior (⋮)
+
+- **Open**: sólo con un libro abierto (en portada ya está el botón principal).
+- **Info**: diálogo con dos secciones compactas:
+  - **Audiobook** (si hay libro abierto o persistido): título, autor, porcentaje
+    escuchado (`floor(posición / duración × 100)`, sólo 100 % al final) con barra,
+    `posición / duración` y `Chapter N of M`. Se actualiza en vivo mientras está
+    abierto. Sin libro abierto usa el último progreso persistido.
+  - **Plaudio**: marca, lema, descripción y formatos soportados.
 
 ---
 
 ## 9. Barra de progreso
 
-Muestra posición actual, duración total y barra. Formato:
+Representa el **capítulo actual**, no el libro completo: va del inicio al final del
+capítulo y muestra tiempo transcurrido y restante del capítulo (`chapterRange()`).
 
-- `HH:MM:SS` si la duración ≥ 1 h.
-- `MM:SS` si la duración < 1 h.
+- Fin del capítulo: `endTime`, si no el inicio del siguiente, si no la duración
+  total (siempre acotado a la duración).
+- Sin capítulos: el tramo es el libro completo.
+- Antes del primer capítulo (si no empieza en 0): tramo `[0, inicio del primero)`.
+- Media Session sigue usando la posición y duración del libro completo.
 
-Si la duración aún no es válida (finito, > 0), mostrar `--:--` y deshabilitar el
-seek hasta disponer de metadata.
+Formato: `HH:MM:SS` si el tramo ≥ 1 h; `MM:SS` si < 1 h.
+
+Si la duración del tramo aún no es válida (finito, > 0), mostrar `--:--` y
+deshabilitar el seek hasta disponer de metadata.
 
 ---
 
@@ -357,7 +379,10 @@ seek hasta disponer de metadata.
 - Actualización optimista de la UI mientras se arrastra; se aplica
   `audio.currentTime` al soltar (o en cada movimiento, con `input`).
 - Tras el seek, persistir inmediatamente la posición.
-- Teclado: `←`/`→` (±5 s), `Espacio` (play/pause), `M` (mute), `↑`/`↓` (velocidad).
+- Teclado: `←`/`→` (±5 s), `Espacio`/`K` (play/pause), `M` (mute), `↑`/`↓`
+  (velocidad siguiente/anterior de la lista). Los atajos se ignoran sin libro
+  abierto, con un diálogo abierto, con modificadores (`Cmd`/`Ctrl`/`Alt`), en campos
+  de formulario, y `Espacio` sobre un botón enfocado activa ese botón.
 
 ```ts
 audio.currentTime = newPosition;
@@ -376,11 +401,15 @@ audio.currentTime = Math.min(audio.duration || Infinity, audio.currentTime + SEE
 
 ## 12. Velocidad de reproducción
 
-Valores mínimos: `0.75×, 1×, 1.25×, 1.5×, 1.75×, 2×`.
+Valores: `0.8×, 0.9×, 1×, 1.1×, 1.2×, 1.3×, 1.4×, 1.5×`, definidos una sola vez en
+`PLAYBACK_RATES` (`src/rates.ts`); el selector se genera a partir de ella.
 
 ```ts
-audio.playbackRate = rate;
+audio.playbackRate = nearestRate(rate);
 ```
+
+- Cualquier velocidad fuera de la lista (p. ej. persistida por una versión
+  anterior) se ajusta a la más cercana.
 
 - Se persiste por audiolibro.
 - Se actualiza en Media Session (`setPositionState({ playbackRate })`).
@@ -458,7 +487,10 @@ Guardar automáticamente:
 - al cambiar de capítulo;
 - al modificar la velocidad;
 - al cambiar `visibilityState`;
-- en `pagehide`/`beforeunload` (best effort).
+- en `pagehide` (best effort; no se usa `beforeunload` porque impide el bfcache).
+
+No se persiste nada hasta `loadedmetadata` del libro actual, para no pisar la
+posición guardada con 0 antes de restaurarla.
 
 **Throttling:** máximo una escritura cada 5 s durante reproducción continua; las
 acciones puntuales (pausa, seek, cambio de velocidad, capítulo) fuerzan escritura
@@ -531,14 +563,23 @@ Regla de oro: **no encontrar capítulos jamás impide reproducir.**
 
 ### 18.2 Estrategia de parsing
 
-- Localizar `moov` (sección 5.1) y parsear con MP4Box.js alimentándolo **solo** con
-  los bytes del `moov`.
-- De `moov`: `mvhd` (duración), pistas de audio, pista de capítulos, `udta`/`meta`
-  (título, autor, `covr`).
+Carga en **dos fases** (`loadBookMetadata` devuelve dos promesas):
+
+1. **Metadata** (milisegundos): localizar y leer el `moov` (sección 5.1); de él,
+   `mvhd` (duración) y `udta/meta/ilst` (título, autor, `covr`). Se pinta en cuanto
+   está lista y apaga el indicador de carga.
+2. **Capítulos**: del mismo `moov`, sólo las tablas de la pista de capítulos
+   (`parseMovie`): la pista de texto referenciada por `tref/chap` de la pista de
+   audio (descartando referencias a imágenes) o, si no hay, la primera pista de
+   texto. Se expanden `stsc` + `stco`/`co64` + `stsz` + `stts` (+ `ctts`) a
+   muestras y se leen sus textos `tx3g` de `mdat`: en una sola lectura si caben en
+   1 MiB, si no en paralelo. **Las tablas de la pista de audio nunca se recorren.**
+
 - Construir `Chapter[]` ordenado por `startTime`; si la última no tiene `endTime`,
   usar la duración total.
-- Si MP4Box falla o no hay capítulos, intentar el parser ligero propio de `chpl` /
-  chapter track; si todo falla, `chapters = []`.
+- Si no hay pista de capítulos, usar `chpl`; si todo falla, `chapters = []`.
+- Tablas truncadas o corruptas se acotan a lo que cabe en la caja; nunca lanzan.
+- Resultados de un libro anterior se descartan si entretanto se abrió otro.
 
 ### 18.3 Capítulo actual
 
@@ -609,7 +650,7 @@ if ("mediaSession" in navigator) {
     title: bookTitle,
     artist: author,
     album: currentChapterTitle,
-    artwork: [{ src: coverUrl, sizes: "512x512", type: "image/jpeg" }],
+    artwork: [{ src: coverUrl, type: artwork.mime }], // MIME real; sin `sizes`
   });
 }
 ```
@@ -678,7 +719,7 @@ Incluir manifest, Service Worker e iconos.
 
 Precachea **solo el app shell**:
 
-- `index.html`, JS, CSS, manifest, iconos, librería MP4Box empaquetada.
+- `index.html`, JS, CSS, manifest, iconos.
 
 **No** cachea MP4/M4A/M4B. El audiolibro nunca entra en Cache Storage (además, los
 `objectURL` no son cacheables por diseño).
@@ -735,16 +776,20 @@ plaudio/
     ├── main.ts            # bootstrap, wiring de eventos
     ├── player.ts          # Player: <audio> wrapper
     ├── ui.ts              # render de la interfaz
-    ├── state.ts           # AppState y helpers
     ├── persistence.ts     # IndexedDB
     ├── media-session.ts   # Media Session API
     ├── metadata.ts        # orquesta metadata + artwork
     ├── chapters.ts        # modelo, búsqueda, navegación
+    ├── rates.ts           # velocidades disponibles (PLAYBACK_RATES)
+    ├── file-access.ts     # File System Access API (abrir / reabrir)
     ├── types.ts           # interfaces compartidas
     ├── utils.ts           # formatTime, getBookId, throttle, clamp
     ├── mp4/
     │   ├── atoms.ts       # escaneo de átomos de nivel superior
-    │   └── parse.ts       # MP4Box sobre el moov (+ fallback)
+    │   ├── boxreader.ts   # lectura de cajas dentro de un buffer
+    │   ├── ilst.ts        # título, autor, carátula (udta/meta/ilst)
+    │   ├── movie.ts       # duración + muestras de la pista de capítulos
+    │   └── parse.ts       # orquesta moov → metadata / capítulos (+ chpl)
     └── styles.css
 ```
 
@@ -771,23 +816,22 @@ interface AppState {
   objectUrl?: string;
   bookId?: string;
 
-  title?: string;
+  title: string;
   author?: string;
   coverUrl?: string;
 
   duration: number;
-  currentTime: number;
 
   playbackRate: number;
   playing: boolean;
-  canPlay: boolean;
 
   chapters: Chapter[];
   currentChapterIndex: number; // -1 si no hay
 }
 ```
 
-Sin librería global de estado.
+Sin librería global de estado. La posición actual se lee siempre de
+`audio.currentTime` (fuente única de verdad).
 
 ---
 
@@ -798,10 +842,11 @@ Sin librería global de estado.
 ```text
               PLAUDIO
 
-   Tus audiolibros,
-   sin complicaciones.
+      YOUR PERSONAL
+     AUDIOBOOK PLAYER
 
-        [ Abrir audiolibro ]
+         [   Open   ]
+         [ Continue ]      ← sólo si hay libro persistido
 ```
 
 ### 28.2 Al restaurar
@@ -883,8 +928,10 @@ Filosofía: lo accesorio (capítulos, metadata, artwork, IndexedDB, Media Sessio
 - Cero copias innecesarias del MP4 (solo `moov` y carátula).
 - Mínimas escrituras en IndexedDB (throttling).
 - Mínimo consumo de batería.
-- Parsing de metadata en `requestIdleCallback`/async tras `loadedmetadata`, sin
-  bloquear el hilo principal (trocear el parseo si hiciera falta).
+- Parsing de metadata asíncrono y en paralelo con la carga del audio; el coste
+  síncrono es O(tamaño de la pista de capítulos), no O(duración del libro):
+  ~2 ms para un `moov` de 11 MB con 2,3 M muestras de audio (frente a ~450 ms con
+  MP4Box).
 
 ---
 
@@ -935,7 +982,7 @@ Filosofía: lo accesorio (capítulos, metadata, artwork, IndexedDB, Media Sessio
 | CA-06 | Moverse a cualquier punto |
 | CA-07 | Retroceder 15 s |
 | CA-08 | Avanzar 30 s |
-| CA-09 | Cambiar la velocidad entre 0,75× y 2× |
+| CA-09 | Cambiar la velocidad entre 0,8× y 1,5× |
 | CA-10 | Guarda automáticamente la posición |
 | CA-11 | Cerrar completamente la app |
 | CA-12 | Volver a abrirla |
